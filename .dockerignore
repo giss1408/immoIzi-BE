@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+*.sqlite3
+immoizi/db.sqlite3
+immoizi/media/
+media/
+__pycache__/
+*.py[cod]
+.vscode/
+.pytest_cache/
+.coverage

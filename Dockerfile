@@ -1,21 +1,22 @@
 # Dockerfile
 
-# The first instruction is what image we want to base our container on
-# We Use an official Python runtime as a parent image
-FROM python:3.8
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+	PYTHONUNBUFFERED=1
 
 # Allows docker to cache installed dependencies between builds
 COPY requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install graphene-django
-
 # Mounts the application code to the image
-COPY . code
+COPY . /code
 WORKDIR /code
+
+RUN adduser --disabled-password --gecos "" django \
+	&& chown -R django:django /code
+USER django
 
 EXPOSE 8000
 
-# runs the production server
-ENTRYPOINT ["python", "immoizi/manage.py"]
-CMD ["runserver", "0.0.0.0:8000"]
+CMD ["gunicorn", "immoizi.wsgi:application", "--chdir", "immoizi", "--bind", "0.0.0.0:8000"]

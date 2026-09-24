@@ -4,6 +4,8 @@ __pycache__/
 *.py[cod]
 .vscode/
 db.sqlite3
+media/
+immoizi/media/
 *.pot
 *.log
 local_settings.py

@@ -1,40 +1,644 @@
-from django.test import TestCase
-from .models import Product, Hotel
+from types import SimpleNamespace
+from io import BytesIO
+from decimal import Decimal
+import tempfile
+import datetime
 
-class ProductModelTest(TestCase):
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import AnonymousUser
+from django.core.exceptions import ValidationError
+from django.core.files.storage import default_storage
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.conf import settings
+from django.test import TestCase, override_settings
+from django.utils import translation
+from PIL import Image
+
+from .models import (
+    Category,
+    Description,
+    LandlordProfile,
+    Lease,
+    MaintenanceRequest,
+    Notification,
+    PropertyInterestMessage,
+    PropertyInterestRequest,
+    Organization,
+    OrganizationMembership,
+    PropertyDocument,
+    PropertyMedia,
+    RentPayment,
+    Tenant,
+    TenantProfile,
+    UserProfile,
+    validate_property_image,
+    validate_property_video,
+)
+from .schema import schema
+
+
+class GraphQLSecurityTest(TestCase):
     def setUp(self):
-        self.product = Product.objects.create(
-            title="Test Product",
-            price=100000,
-            description="Test Description",
-            surface_m2=75
+        User = get_user_model()
+        self.owner = User.objects.create_user(username='owner', password='secret')
+        self.other_owner = User.objects.create_user(username='other', password='secret')
+        self.staff = User.objects.create_user(username='staff', password='secret', is_staff=True)
+        self.category = Category.objects.create(title='Residence')
+        self.owner_tenant = Tenant.objects.create(
+            user=self.owner,
+            nomPrenoms='Owner Tenant',
+            isbn='OWNER0000001',
+            quantity=1,
+        )
+        self.other_tenant = Tenant.objects.create(
+            user=self.other_owner,
+            nomPrenoms='Other Tenant',
+            isbn='OTHER0000001',
+            quantity=1,
+        )
+        self.owner_description = self.create_description('Owner Asset', self.owner_tenant)
+        self.other_description = self.create_description('Other Asset', self.other_tenant)
+
+    def create_description(self, title, tenant):
+        return Description.objects.create(
+            title=title,
+            country="Cote d'Ivoire",
+            city='Abidjan',
+            district='Marcory',
+            tenant=tenant.nomPrenoms,
+            isbn=tenant.isbn,
+            rooms=3,
+            surface_m2=90,
+            price=250000,
+            description='Apartment description',
+            status=True,
+            category=self.category,
+            imageurl='https://example.com/image.jpg',
+            product_tag='APT',
+            bailleur=tenant,
         )
 
-    def test_product_creation(self):
-        self.assertTrue(isinstance(self.product, Product))
-        self.assertEqual(self.product.__str__(), self.product.title)
+    def execute(self, query, user):
+        return schema.execute(query, context_value=SimpleNamespace(user=user))
 
-    def test_product_fields(self):
-        self.assertEqual(self.product.title, "Test Product")
-        self.assertEqual(self.product.price, 100000)
-        self.assertEqual(self.product.description, "Test Description")
-        self.assertEqual(self.product.surface_m2, 75)
+    def test_anonymous_user_cannot_query_assets(self):
+        result = self.execute('{ descriptions { id title } }', AnonymousUser())
 
-class HotelModelTest(TestCase):
-    def setUp(self):
-        self.hotel = Hotel.objects.create(
-            name="Test Hotel",
-            address="123 Test Street",
-            price=200000,
-            rooms=10
+        self.assertTrue(result.errors)
+
+    def test_landlord_only_sees_owned_assets(self):
+        result = self.execute('{ descriptions { title } tenants { nomPrenoms } }', self.owner)
+
+        self.assertIsNone(result.errors)
+        self.assertEqual(result.data['descriptions'], [{'title': 'Owner Asset'}])
+        self.assertEqual(result.data['tenants'], [{'nomPrenoms': 'Owner Tenant'}])
+
+    def test_staff_can_see_all_assets(self):
+        result = self.execute('{ descriptions { title } tenants { nomPrenoms } }', self.staff)
+
+        self.assertIsNone(result.errors)
+        self.assertCountEqual(
+            result.data['descriptions'],
+            [{'title': 'Owner Asset'}, {'title': 'Other Asset'}],
+        )
+        self.assertCountEqual(
+            result.data['tenants'],
+            [{'nomPrenoms': 'Owner Tenant'}, {'nomPrenoms': 'Other Tenant'}],
         )
 
-    def test_hotel_creation(self):
-        self.assertTrue(isinstance(self.hotel, Hotel))
-        self.assertEqual(self.hotel.__str__(), self.hotel.name)
+    def test_landlord_cannot_update_another_landlords_asset(self):
+        mutation = f'''
+            mutation {{
+                updateDescription(id: "{self.other_description.id}", input: {{ title: "Changed" }}) {{
+                    description {{ title }}
+                }}
+            }}
+        '''
 
-    def test_hotel_fields(self):
-        self.assertEqual(self.hotel.name, "Test Hotel")
-        self.assertEqual(self.hotel.address, "123 Test Street")
-        self.assertEqual(self.hotel.price, 200000)
-        self.assertEqual(self.hotel.rooms, 10)
+        result = self.execute(mutation, self.owner)
+
+        self.assertTrue(result.errors)
+        self.other_description.refresh_from_db()
+        self.assertEqual(self.other_description.title, 'Other Asset')
+
+
+class ManagementBackendTest(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.owner = User.objects.create_user(username='management-owner', password='secret')
+        self.manager = User.objects.create_user(username='management-manager', password='secret')
+        self.outsider = User.objects.create_user(username='management-outsider', password='secret')
+        self.organization = Organization.objects.create(name='Izi Agency', slug='izi-agency')
+        OrganizationMembership.objects.create(
+            organization=self.organization,
+            user=self.owner,
+            role=OrganizationMembership.ROLE_OWNER,
+        )
+        OrganizationMembership.objects.create(
+            organization=self.organization,
+            user=self.manager,
+            role=OrganizationMembership.ROLE_MANAGER,
+        )
+        self.category = Category.objects.create(title='Residence')
+        self.tenant = Tenant.objects.create(
+            organization=self.organization,
+            user=self.owner,
+            nomPrenoms='Managed Tenant',
+            isbn='MANAGED000001',
+            quantity=1,
+        )
+        self.property = Description.objects.create(
+            organization=self.organization,
+            created_by=self.owner,
+            title='Managed Asset',
+            country="Cote d'Ivoire",
+            city='Abidjan',
+            district='Cocody',
+            tenant=self.tenant.nomPrenoms,
+            isbn=self.tenant.isbn,
+            rooms=4,
+            surface_m2=120,
+            price=450000,
+            description='Managed apartment',
+            status=True,
+            listing_status=Description.LISTING_AVAILABLE,
+            category=self.category,
+            imageurl='https://example.com/image.jpg',
+            product_tag='APT',
+            bailleur=self.tenant,
+        )
+
+    def execute(self, query, user):
+        return schema.execute(query, context_value=SimpleNamespace(user=user))
+
+    def test_organization_member_can_query_scoped_management_data(self):
+        lease = Lease.objects.create(
+            property=self.property,
+            organization=self.organization,
+            tenant=self.tenant,
+            start_date=datetime.date(2026, 1, 1),
+            rent_amount=Decimal('450000.00'),
+            status=Lease.STATUS_ACTIVE,
+        )
+        RentPayment.objects.create(
+            lease=lease,
+            organization=self.organization,
+            due_date=datetime.date(2026, 2, 1),
+            amount=Decimal('450000.00'),
+        )
+        PropertyMedia.objects.create(
+            property=self.property,
+            organization=self.organization,
+            media_type=PropertyMedia.MEDIA_EXTERNAL_VIDEO,
+            external_url='https://example.com/property-video',
+            uploaded_by=self.owner,
+        )
+
+        result = self.execute('''
+            {
+                organizations { name }
+                descriptions(first: 1, search: "Managed") { title listingStatus }
+                leases { status rentAmount }
+                rentPayments { status amount }
+                propertyMedia { mediaType externalUrl }
+            }
+        ''', self.manager)
+
+        self.assertIsNone(result.errors)
+        self.assertEqual(result.data['organizations'], [{'name': 'Izi Agency'}])
+        self.assertEqual(result.data['descriptions'], [{'title': 'Managed Asset', 'listingStatus': 'AVAILABLE'}])
+        self.assertEqual(result.data['leases'], [{'status': 'ACTIVE', 'rentAmount': '450000.00'}])
+        self.assertEqual(result.data['rentPayments'], [{'status': 'PENDING', 'amount': '450000.00'}])
+        self.assertEqual(result.data['propertyMedia'], [{'mediaType': 'EXTERNAL_VIDEO', 'externalUrl': 'https://example.com/property-video'}])
+
+    def test_outsider_cannot_query_organization_property(self):
+        result = self.execute('{ descriptions { title } organizations { name } }', self.outsider)
+
+        self.assertIsNone(result.errors)
+        self.assertEqual(result.data['descriptions'], [])
+        self.assertEqual(result.data['organizations'], [])
+
+    def test_member_can_create_maintenance_request_for_scoped_property(self):
+        mutation = f'''
+            mutation {{
+                createMaintenanceRequest(
+                    propertyId: "{self.property.id}",
+                    title: "Leak",
+                    description: "Water under the sink",
+                    priority: "high"
+                ) {{
+                    maintenanceRequest {{ title priority status }}
+                }}
+            }}
+        '''
+
+        result = self.execute(mutation, self.manager)
+
+        self.assertIsNone(result.errors)
+        self.assertEqual(
+            result.data['createMaintenanceRequest']['maintenanceRequest'],
+            {'title': 'Leak', 'priority': 'HIGH', 'status': 'OPEN'},
+        )
+        self.assertTrue(MaintenanceRequest.objects.filter(property=self.property, reported_by=self.manager).exists())
+
+    def test_outsider_cannot_create_maintenance_request_for_scoped_property(self):
+        mutation = f'''
+            mutation {{
+                createMaintenanceRequest(
+                    propertyId: "{self.property.id}",
+                    title: "Leak",
+                    description: "Water under the sink"
+                ) {{
+                    maintenanceRequest {{ title }}
+                }}
+            }}
+        '''
+
+        result = self.execute(mutation, self.outsider)
+
+        self.assertTrue(result.errors)
+        self.assertFalse(MaintenanceRequest.objects.filter(title='Leak').exists())
+
+
+class RoleAccessTest(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.seeker = User.objects.create_user(username='seeker', password='secret', email='seeker@example.com')
+        self.landlord_user = User.objects.create_user(username='landlord', password='secret')
+        self.tenant_user = User.objects.create_user(username='tenant-user', password='secret')
+        self.other_tenant_user = User.objects.create_user(username='other-tenant-user', password='secret')
+        UserProfile.objects.create(user=self.seeker, preferred_city='Abidjan')
+        self.organization = Organization.objects.create(name='Role Agency', slug='role-agency')
+        self.landlord = LandlordProfile.objects.create(
+            user=self.landlord_user,
+            organization=self.organization,
+            display_name='Primary Landlord',
+            is_verified=True,
+        )
+        OrganizationMembership.objects.create(
+            organization=self.organization,
+            user=self.landlord_user,
+            role=OrganizationMembership.ROLE_OWNER,
+        )
+        self.tenant_profile = TenantProfile.objects.create(user=self.tenant_user, display_name='Current Tenant')
+        self.other_tenant_profile = TenantProfile.objects.create(user=self.other_tenant_user, display_name='Other Tenant')
+        self.category = Category.objects.create(title='Residence')
+        self.legacy_tenant = Tenant.objects.create(
+            organization=self.organization,
+            user=self.tenant_user,
+            nomPrenoms='Current Tenant',
+            isbn='TENANT000001',
+            quantity=1,
+        )
+        self.public_property = self.create_property('Available Public Asset', Description.LISTING_AVAILABLE)
+        self.rented_property = self.create_property(
+            'Tenant Rented Asset',
+            Description.LISTING_RENTED,
+            current_tenant=self.tenant_profile,
+        )
+        self.other_rented_property = self.create_property(
+            'Other Tenant Asset',
+            Description.LISTING_RENTED,
+            current_tenant=self.other_tenant_profile,
+        )
+        self.lease = Lease.objects.create(
+            property=self.rented_property,
+            organization=self.organization,
+            tenant=self.legacy_tenant,
+            tenant_profile=self.tenant_profile,
+            start_date=datetime.date(2026, 1, 1),
+            rent_amount=Decimal('300000.00'),
+            status=Lease.STATUS_ACTIVE,
+        )
+        RentPayment.objects.create(
+            lease=self.lease,
+            organization=self.organization,
+            due_date=datetime.date(2026, 2, 1),
+            amount=Decimal('300000.00'),
+        )
+        PropertyDocument.objects.create(
+            property=self.rented_property,
+            organization=self.organization,
+            title='Tenant Receipt',
+            document_type=PropertyDocument.DOCUMENT_RECEIPT,
+            visibility=PropertyDocument.VISIBILITY_TENANT,
+            file=SimpleUploadedFile('receipt.pdf', b'receipt', content_type='application/pdf'),
+            uploaded_by=self.landlord_user,
+        )
+        PropertyDocument.objects.create(
+            property=self.rented_property,
+            organization=self.organization,
+            title='Internal Note',
+            document_type=PropertyDocument.DOCUMENT_OTHER,
+            visibility=PropertyDocument.VISIBILITY_INTERNAL,
+            file=SimpleUploadedFile('internal.pdf', b'internal', content_type='application/pdf'),
+            uploaded_by=self.landlord_user,
+        )
+
+    def create_property(self, title, listing_status, current_tenant=None):
+        return Description.objects.create(
+            organization=self.organization,
+            created_by=self.landlord_user,
+            landlord=self.landlord,
+            current_tenant=current_tenant,
+            title=title,
+            country="Cote d'Ivoire",
+            city='Abidjan',
+            district='Plateau',
+            tenant=current_tenant.display_name if current_tenant else 'Anonyme',
+            isbn='ROLE0000001',
+            rooms=3,
+            surface_m2=85,
+            price=300000,
+            description='Role-based property',
+            status=True,
+            listing_status=listing_status,
+            category=self.category,
+            imageurl='https://example.com/image.jpg',
+            product_tag='APT',
+            bailleur=self.legacy_tenant,
+        )
+
+    def execute(self, query, user):
+        return schema.execute(query, context_value=SimpleNamespace(user=user))
+
+    def test_seeker_can_read_public_assets_and_profile(self):
+        result = self.execute('''
+            {
+                me { username isSeeker isLandlord isTenant userProfile { preferredCity } }
+                publicDescriptions { title }
+            }
+        ''', self.seeker)
+
+        self.assertIsNone(result.errors)
+        self.assertEqual(result.data['me']['username'], 'seeker')
+        self.assertTrue(result.data['me']['isSeeker'])
+        self.assertFalse(result.data['me']['isLandlord'])
+        self.assertFalse(result.data['me']['isTenant'])
+        self.assertEqual(result.data['me']['userProfile'], {'preferredCity': 'Abidjan'})
+        self.assertEqual(result.data['publicDescriptions'], [{'title': 'Available Public Asset'}])
+
+    def test_landlord_can_read_owned_properties(self):
+        result = self.execute('{ me { isLandlord landlordProfile { displayName } } myLandlordProperties { title } }', self.landlord_user)
+
+        self.assertIsNone(result.errors)
+        self.assertTrue(result.data['me']['isLandlord'])
+        self.assertEqual(result.data['me']['landlordProfile'], {'displayName': 'Primary Landlord'})
+        self.assertCountEqual(
+            result.data['myLandlordProperties'],
+            [{'title': 'Available Public Asset'}, {'title': 'Tenant Rented Asset'}, {'title': 'Other Tenant Asset'}],
+        )
+
+    def test_tenant_reads_only_active_rented_asset_data(self):
+        result = self.execute('''
+            {
+                me { isTenant tenantProfile { displayName } }
+                myTenantProperties { title }
+                myTenantPayments { amount status }
+                myTenantDocuments { title visibility }
+            }
+        ''', self.tenant_user)
+
+        self.assertIsNone(result.errors)
+        self.assertTrue(result.data['me']['isTenant'])
+        self.assertEqual(result.data['me']['tenantProfile'], {'displayName': 'Current Tenant'})
+        self.assertEqual(result.data['myTenantProperties'], [{'title': 'Tenant Rented Asset'}])
+        self.assertEqual(result.data['myTenantPayments'], [{'amount': '300000.00', 'status': 'PENDING'}])
+        self.assertEqual(result.data['myTenantDocuments'], [{'title': 'Tenant Receipt', 'visibility': 'TENANT'}])
+
+    def test_tenant_cannot_create_maintenance_for_unrented_property(self):
+        mutation = f'''
+            mutation {{
+                createMaintenanceRequest(
+                    propertyId: "{self.public_property.id}",
+                    title: "Broken sink",
+                    description: "Needs repair"
+                ) {{
+                    maintenanceRequest {{ title }}
+                }}
+            }}
+        '''
+
+        result = self.execute(mutation, self.tenant_user)
+
+        self.assertTrue(result.errors)
+        self.assertFalse(MaintenanceRequest.objects.filter(title='Broken sink').exists())
+
+    def test_property_interest_creates_landlord_notification(self):
+        mutation = f'''
+            mutation {{
+                createPropertyInterestRequest(
+                    propertyId: "{self.public_property.id}",
+                    profession: "Architecte",
+                    salaryRange: "500000_800000",
+                    occupantsCount: 2,
+                    leaseStartDate: "2026-10-01",
+                    message: "Je souhaite visiter le bien."
+                ) {{
+                    interestRequest {{ id status }}
+                }}
+            }}
+        '''
+
+        result = self.execute(mutation, self.seeker)
+
+        self.assertIsNone(result.errors)
+        self.assertEqual(result.data['createPropertyInterestRequest']['interestRequest']['status'], 'PENDING')
+        notification = Notification.objects.get(recipient=self.landlord_user)
+        self.assertEqual(notification.property_id, self.public_property.id)
+        self.assertFalse(notification.is_read)
+
+        landlord_result = self.execute('{ notifications { title property { title } isRead } }', self.landlord_user)
+        self.assertIsNone(landlord_result.errors)
+        self.assertEqual(landlord_result.data['notifications'][0]['property']['title'], 'Available Public Asset')
+
+        outsider_result = self.execute('{ notifications { id } }', self.other_tenant_user)
+        self.assertIsNone(outsider_result.errors)
+        self.assertEqual(outsider_result.data['notifications'], [])
+
+    def test_landlord_can_propose_visit_and_only_applicant_can_read_thread(self):
+        interest_request = PropertyInterestRequest.objects.create(
+            property=self.public_property,
+            applicant=self.seeker,
+            profession='Architecte',
+            salary_range='500000_800000',
+            occupants_count=2,
+            lease_start_date=datetime.date(2026, 10, 1),
+        )
+        mutation = f'''
+            mutation {{
+                sendPropertyInterestMessage(
+                    interestRequestId: "{interest_request.id}",
+                    message: "Je vous propose une visite mardi à 14h.",
+                    messageType: "visit_proposal",
+                    proposedVisitAt: "2026-10-06T14:00:00Z"
+                ) {{
+                    interestMessage {{ message messageType proposedVisitAt }}
+                }}
+            }}
+        '''
+
+        result = self.execute(mutation, self.landlord_user)
+
+        self.assertIsNone(result.errors)
+        self.assertEqual(result.data['sendPropertyInterestMessage']['interestMessage']['messageType'], 'VISIT_PROPOSAL')
+        interest_request.refresh_from_db()
+        self.assertEqual(interest_request.status, PropertyInterestRequest.STATUS_REVIEWING)
+        self.assertTrue(PropertyInterestMessage.objects.filter(interest_request=interest_request, sender=self.landlord_user).exists())
+        applicant_result = self.execute(
+            f'{{ propertyInterestMessages(interestRequestId: "{interest_request.id}") {{ message sender {{ username }} }} }}',
+            self.seeker,
+        )
+        self.assertIsNone(applicant_result.errors)
+        self.assertEqual(applicant_result.data['propertyInterestMessages'][0]['sender']['username'], 'landlord')
+
+        outsider_result = self.execute(
+            f'{{ propertyInterestMessages(interestRequestId: "{interest_request.id}") {{ id }} }}',
+            self.other_tenant_user,
+        )
+        self.assertTrue(outsider_result.errors)
+
+    def test_landlord_can_delete_owned_notification_only(self):
+        notification = Notification.objects.create(
+            recipient=self.landlord_user,
+            property=self.public_property,
+            title='Test notification',
+            message='Test message',
+            notification_type='test',
+        )
+        mutation = f'mutation {{ deleteNotification(notificationId: "{notification.id}") {{ deletedNotificationId }} }}'
+
+        result = self.execute(mutation, self.landlord_user)
+
+        self.assertIsNone(result.errors)
+        self.assertFalse(Notification.objects.filter(pk=notification.id).exists())
+
+        forbidden = self.execute(mutation, self.other_tenant_user)
+        self.assertTrue(forbidden.errors)
+
+
+class ImageUploadSecurityTest(TestCase):
+    def make_image_upload(self, name='property.jpg', image_format='JPEG'):
+        image_buffer = BytesIO()
+        Image.new('RGB', (20, 20), color='white').save(image_buffer, format=image_format)
+        image_buffer.seek(0)
+        return SimpleUploadedFile(name, image_buffer.getvalue(), content_type='image/jpeg')
+
+    def make_video_upload(self, name='property.mp4', content_type='video/mp4', size=1024):
+        return SimpleUploadedFile(name, b'0' * size, content_type=content_type)
+
+    def test_real_estate_asset_image_upload_is_saved(self):
+        User = get_user_model()
+        owner = User.objects.create_user(username='asset-owner', password='secret')
+        category = Category.objects.create(title='Residence')
+        tenant = Tenant.objects.create(
+            user=owner,
+            nomPrenoms='Asset Owner',
+            isbn='ASSET0000001',
+            quantity=1,
+        )
+
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            asset = Description(
+                title='Asset With Image',
+                country="Cote d'Ivoire",
+                city='Abidjan',
+                district='Marcory',
+                tenant=tenant.nomPrenoms,
+                isbn=tenant.isbn,
+                rooms=4,
+                surface_m2=120,
+                price=350000,
+                description='Property with an uploaded image',
+                status=True,
+                category=category,
+                imageurl='https://example.com/image.jpg',
+                product_tag='HOUSE',
+                bailleur=tenant,
+                main_image=self.make_image_upload(),
+            )
+
+            asset.full_clean()
+            asset.save()
+            stored_asset = Description.objects.get(pk=asset.pk)
+
+            self.assertTrue(stored_asset.main_image.name.startswith('properties/'))
+            self.assertTrue(stored_asset.thumbnail.name.startswith('descriptions/thumbnails/'))
+            self.assertTrue(default_storage.exists(stored_asset.main_image.name))
+            self.assertTrue(default_storage.exists(stored_asset.thumbnail.name))
+
+    def test_real_estate_asset_video_upload_is_saved(self):
+        User = get_user_model()
+        owner = User.objects.create_user(username='video-owner', password='secret')
+        category = Category.objects.create(title='Residence')
+        tenant = Tenant.objects.create(
+            user=owner,
+            nomPrenoms='Video Owner',
+            isbn='VIDEO0000001',
+            quantity=1,
+        )
+
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            asset = Description(
+                title='Asset With Video',
+                country="Cote d'Ivoire",
+                city='Abidjan',
+                district='Marcory',
+                tenant=tenant.nomPrenoms,
+                isbn=tenant.isbn,
+                rooms=4,
+                surface_m2=120,
+                price=350000,
+                description='Property with one uploaded description video',
+                status=True,
+                category=category,
+                imageurl='https://example.com/image.jpg',
+                product_tag='HOUSE',
+                bailleur=tenant,
+                description_video=self.make_video_upload(),
+            )
+
+            asset.full_clean()
+            asset.save()
+            stored_asset = Description.objects.get(pk=asset.pk)
+
+            self.assertTrue(stored_asset.description_video.name.startswith('properties/'))
+            self.assertTrue(default_storage.exists(stored_asset.description_video.name))
+
+    def test_invalid_image_upload_is_rejected(self):
+        upload = SimpleUploadedFile('property.jpg', b'not an image', content_type='image/jpeg')
+
+        with self.assertRaises(ValidationError):
+            validate_property_image(upload)
+
+    def test_oversized_image_upload_is_rejected(self):
+        upload = SimpleUploadedFile('property.jpg', b'0' * (5 * 1024 * 1024 + 1), content_type='image/jpeg')
+
+        with self.assertRaises(ValidationError):
+            validate_property_image(upload)
+
+    def test_oversized_video_upload_is_rejected(self):
+        upload = self.make_video_upload(size=10 * 1024 * 1024 + 1)
+
+        with self.assertRaises(ValidationError):
+            validate_property_video(upload)
+
+    def test_unsupported_video_upload_is_rejected(self):
+        upload = self.make_video_upload(name='property.avi', content_type='video/x-msvideo')
+
+        with self.assertRaises(ValidationError):
+            Description(description_video=upload).full_clean(exclude=[
+                'title', 'country', 'city', 'district', 'tenant', 'isbn', 'rooms',
+                'surface_m2', 'price', 'description', 'status', 'category',
+                'imageurl', 'product_tag', 'bailleur',
+            ])
+
+
+class InternationalizationTest(TestCase):
+    def test_french_and_english_languages_are_configured(self):
+        self.assertIn(('fr', 'Français'), settings.LANGUAGES)
+        self.assertIn(('en', 'English'), settings.LANGUAGES)
+
+    def test_french_language_can_be_activated(self):
+        with translation.override('fr'):
+            self.assertEqual(translation.get_language(), 'fr')

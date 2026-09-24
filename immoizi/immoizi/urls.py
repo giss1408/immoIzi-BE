@@ -14,16 +14,20 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
+from django.views.decorators.csrf import csrf_exempt
 from graphene_django.views import GraphQLView
 from products.schema import schema
-from django.views.decorators.csrf import csrf_exempt,csrf_protect #Add this
+from products.views import upload_property_document, upload_property_media
 from django.conf import settings
 from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path("graphql", csrf_exempt(GraphQLView.as_view(graphiql=True, schema=schema))),
+    path('i18n/', include('django.conf.urls.i18n')),
+    path("graphql", csrf_exempt(GraphQLView.as_view(graphiql=settings.DEBUG, schema=schema))),
+    path('api/properties/<int:property_id>/media', upload_property_media, name='upload_property_media'),
+    path('api/properties/<int:property_id>/documents', upload_property_document, name='upload_property_document'),
     #path('image_upload', hotel_image_view, name='image_upload'),
     #path('success', success, name='success'),
 ]

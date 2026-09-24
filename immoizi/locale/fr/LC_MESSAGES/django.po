@@ -1,0 +1,40 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: immoizi\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-24 00:00+0000\n"
+"PO-Revision-Date: 2026-09-24 00:00+0000\n"
+"Last-Translator: immoizi\n"
+"Language-Team: French\n"
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+msgid "Image files must be 5 MB or smaller."
+msgstr "Les images doivent peser 5 Mo ou moins."
+
+msgid "Upload a valid image file."
+msgstr "Veuillez envoyer un fichier image valide."
+
+msgid "Video files must be 10 MB or smaller."
+msgstr "Les videos doivent peser 10 Mo ou moins."
+
+msgid "Upload a valid MP4, WebM, or MOV video file."
+msgstr "Veuillez envoyer une video valide au format MP4, WebM ou MOV."
+
+msgid "External video media requires a URL."
+msgstr "Une video externe doit avoir une URL."
+
+msgid "Uploaded media requires a file."
+msgstr "Un media envoye doit contenir un fichier."
+
+msgid "End date must be after start date."
+msgstr "La date de fin doit etre posterieure a la date de debut."
+
+msgid "Authentication is required."
+msgstr "L'authentification est obligatoire."
+
+msgid "Tenants can create maintenance requests only for their rented properties."
+msgstr "Les locataires peuvent creer des demandes de maintenance uniquement pour les biens qu'ils louent."

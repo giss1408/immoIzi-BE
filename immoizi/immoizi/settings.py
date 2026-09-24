@@ -20,7 +20,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: don't run with debug turned on in production!
 env = environ.Env(
     # set casting, default value
-    DEBUG=(bool, True)
+    DEBUG=(bool, False),
+    CORS_ALLOW_ALL_ORIGINS=(bool, False),
+    SECURE_SSL_REDIRECT=(bool, False),
+    SESSION_COOKIE_SECURE=(bool, False),
+    CSRF_COOKIE_SECURE=(bool, False),
+    SECURE_HSTS_SECONDS=(int, 0),
+    DATABASE_CONN_MAX_AGE=(int, 60),
+    DATABASE_CONN_HEALTH_CHECKS=(bool, True),
 )
 
 environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
@@ -33,19 +40,24 @@ DEBUG = env('DEBUG')
 SECRET_KEY = env('SECRET_KEY')
 
 # Add CORS settings
-CORS_ALLOW_ALL_ORIGINS = True  # For development only
-CORS_ALLOWED_ORIGINS = [
+CORS_ALLOW_ALL_ORIGINS = env('CORS_ALLOW_ALL_ORIGINS')
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-    "http://192.168.178.41:8000"
-]
+])
 
-ALLOWED_HOSTS = [
-    '192.168.178.41',
-    'localhost',
-    '127.0.0.1',
-    "*"
-]
+ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
+
+# Cloudinary is used as an optional cloud media backend for property images/videos.
+# Set CLOUDINARY_URL (cloudinary://<api_key>:<api_secret>@<cloud_name>) to enable it;
+# without it, uploads keep using local disk storage (MEDIA_ROOT below) so local/dev
+# and test environments keep working unchanged.
+CLOUDINARY_URL = env('CLOUDINARY_URL', default='')
+USE_CLOUDINARY = bool(CLOUDINARY_URL)
+CLOUDINARY_STORAGE = {
+    'MEDIA_TAG': env('CLOUDINARY_MEDIA_TAG', default='immoizi'),
+    'PREFIX': env('CLOUDINARY_MEDIA_PREFIX', default='immoizi'),
+}
 
 
 # Application definition
@@ -62,15 +74,20 @@ INSTALLED_APPS = [
     'corsheaders',
 ]
 
+if USE_CLOUDINARY:
+    INSTALLED_APPS += ['cloudinary_storage', 'cloudinary']
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'products.middleware.BearerTokenAuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = 'immoizi.urls'
@@ -95,14 +112,16 @@ WSGI_APPLICATION = 'immoizi.wsgi.application'
 
 
 # Database
-# https://docs.djangoproject.com/en/3.2/ref/settings/#databases
+# https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': env.db(
+        'DATABASE_URL',
+        default=f'sqlite:///{BASE_DIR / "db.sqlite3"}',
+    )
 }
+DATABASES['default']['CONN_MAX_AGE'] = env('DATABASE_CONN_MAX_AGE')
+DATABASES['default']['CONN_HEALTH_CHECKS'] = env('DATABASE_CONN_HEALTH_CHECKS')
 
 
 # Password validation
@@ -125,9 +144,14 @@ AUTH_PASSWORD_VALIDATORS = [
 
 
 # Internationalization
-# https://docs.djangoproject.com/en/3.2/topics/i18n/
+# https://docs.djangoproject.com/en/4.2/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = env('LANGUAGE_CODE', default='fr')
+LANGUAGES = [
+    ('fr', 'Français'),
+    ('en', 'English'),
+]
+LOCALE_PATHS = [BASE_DIR / 'locale']
 
 TIME_ZONE = 'UTC'
 
@@ -150,4 +174,20 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 MEDIA_URL = '/media/'
+
+if USE_CLOUDINARY:
+    # CLOUDINARY_URL is parsed automatically by the cloudinary SDK from the env var.
+    DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+
+SECURE_SSL_REDIRECT = env('SECURE_SSL_REDIRECT')
+SESSION_COOKIE_SECURE = env('SESSION_COOKIE_SECURE')
+CSRF_COOKIE_SECURE = env('CSRF_COOKIE_SECURE')
+SECURE_HSTS_SECONDS = env('SECURE_HSTS_SECONDS')
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', default=False)
+SECURE_HSTS_PRELOAD = env.bool('SECURE_HSTS_PRELOAD', default=False)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+
+FILE_UPLOAD_MAX_MEMORY_SIZE = env.int('FILE_UPLOAD_MAX_MEMORY_SIZE', default=5 * 1024 * 1024)
+DATA_UPLOAD_MAX_MEMORY_SIZE = env.int('DATA_UPLOAD_MAX_MEMORY_SIZE', default=5 * 1024 * 1024)
 
