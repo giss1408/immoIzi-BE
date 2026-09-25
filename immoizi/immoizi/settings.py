@@ -122,6 +122,13 @@ WSGI_APPLICATION = 'immoizi.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
+# Render's disk is wiped on every deploy, so a SQLite fallback there would
+# silently lose all data. Fail the build instead.
+if env('RENDER', default='') and not env('DATABASE_URL', default=''):
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured(
+        'Set the DATABASE_URL environment variable on Render.')
+
 DATABASES = {
     'default': env.db(
         'DATABASE_URL',
