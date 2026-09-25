@@ -346,9 +346,14 @@ class MaintenanceRequestType(DjangoObjectType):
 
 
 class PropertyInterestRequestType(DjangoObjectType):
+    applicant_name = graphene.String()
+
     class Meta:
         model = PropertyInterestRequest
         fields = ('id', 'property', 'applicant', 'profession', 'salary_range', 'employer', 'occupants_count', 'lease_start_date', 'message', 'status', 'created_at', 'updated_at')
+
+    def resolve_applicant_name(self, info):
+        return self.applicant.get_full_name() or self.applicant.get_username()
 
 
 class NotificationType(DjangoObjectType):
@@ -617,6 +622,69 @@ class SendPropertyInterestMessage(graphene.Mutation):
             message=f'{user.get_full_name() or user.username} vous a écrit au sujet de « {property_obj.title} ».',
         )
         return SendPropertyInterestMessage(interest_message=interest_message)
+
+
+def has_interest_manager_access(user, interest_request):
+    """Landlord, listing creator, agency member or staff of the requested property."""
+    property_obj = interest_request.property
+    landlord_user_id = property_obj.landlord.user_id if property_obj.landlord_id else property_obj.created_by_id
+    return (
+        user.is_staff or user.is_superuser or
+        user.id == landlord_user_id or
+        user.id == property_obj.created_by_id or
+        property_obj.organization_id in organization_ids_for_user(user)
+    )
+
+
+class RespondToPropertyInterest(graphene.Mutation):
+    """Lets the landlord accept or refuse an application; the applicant is notified."""
+
+    class Arguments:
+        interest_request_id = graphene.ID(required=True)
+        accept = graphene.Boolean(required=True)
+        message = graphene.String()
+
+    interest_request = graphene.Field(PropertyInterestRequestType)
+
+    @classmethod
+    def mutate(cls, root, info, interest_request_id, accept, message=''):
+        user = require_authenticated_user(info)
+        try:
+            interest_request = PropertyInterestRequest.objects.select_related(
+                'property__landlord__user', 'property__created_by', 'applicant').get(pk=interest_request_id)
+        except (PropertyInterestRequest.DoesNotExist, ValueError):
+            raise PermissionDenied(_('Interest request not found.'))
+        if not has_interest_manager_access(user, interest_request):
+            raise PermissionDenied(_('Only the landlord can answer this request.'))
+
+        property_obj = interest_request.property
+        interest_request.status = (PropertyInterestRequest.STATUS_ACCEPTED if accept
+                                   else PropertyInterestRequest.STATUS_REJECTED)
+        interest_request.save(update_fields=['status', 'updated_at'])
+
+        note = (message or '').strip()
+        if note:
+            PropertyInterestMessage.objects.create(
+                interest_request=interest_request, sender=user, message=note)
+        landlord_name = user.get_full_name() or user.get_username()
+        verb = 'accepté' if accept else 'refusé'
+        Notification.objects.create(
+            recipient=interest_request.applicant,
+            organization=property_obj.organization,
+            property=property_obj,
+            interest_request=interest_request,
+            notification_type='property_interest.accepted' if accept else 'property_interest.rejected',
+            title='Demande acceptée' if accept else 'Demande refusée',
+            message=f'{landlord_name} a {verb} votre demande pour « {property_obj.title} ».',
+        )
+        AuditLog.objects.create(
+            organization=property_obj.organization,
+            actor=user,
+            action='property_interest.accepted' if accept else 'property_interest.rejected',
+            target_type='PropertyInterestRequest',
+            target_id=interest_request.id,
+        )
+        return RespondToPropertyInterest(interest_request=interest_request)
 
 
 class TokenAuth(graphene.Mutation):
@@ -1035,5 +1103,6 @@ class Mutation(graphene.ObjectType):
     mark_notification_read = MarkNotificationRead.Field()
     delete_notification = DeleteNotification.Field()
     send_property_interest_message = SendPropertyInterestMessage.Field()
+    respond_to_property_interest = RespondToPropertyInterest.Field()
 
 schema = graphene.Schema(query=Query, mutation=Mutation)

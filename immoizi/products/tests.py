@@ -768,3 +768,86 @@ class PropertyListingMutationTest(TestCase):
                                     context_value=SimpleNamespace(user=self.landlord_user))
         self.assertIn('negatifs', str(result.errors[0]))
 
+
+
+class InterestResponseTest(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.landlord_user = User.objects.create_user(username='resp-landlord', password='secret')
+        landlord = LandlordProfile.objects.create(user=self.landlord_user, display_name='Aya')
+        self.applicant = User.objects.create_user(
+            username='resp-applicant', password='secret', first_name='Nadia', last_name='Diallo')
+        self.stranger = User.objects.create_user(username='resp-stranger', password='secret')
+        self.property = Description.objects.create(
+            landlord=landlord, created_by=self.landlord_user, title='Villa Cocody', rooms=5, price=900000,
+            description='Villa', status=False, listing_status=Description.LISTING_AVAILABLE,
+            category=Category.objects.create(title='Residence'), imageurl='', product_tag='VIL')
+
+    def execute(self, query, user, **variables):
+        with translation.override('en'):
+            return schema.execute(query, variable_values=variables, context_value=SimpleNamespace(user=user))
+
+    def apply(self):
+        result = self.execute('''
+            mutation($id: ID!) {
+                createPropertyInterestRequest(propertyId: $id, profession: "Fonctionnaire",
+                    salaryRange: "300 000 - 500 000 FCFA", occupantsCount: 2, leaseStartDate: "2026-11-01",
+                    message: "Bonjour") { interestRequest { id } }
+            }''', self.applicant, id=str(self.property.id))
+        self.assertIsNone(result.errors)
+        return result.data['createPropertyInterestRequest']['interestRequest']['id']
+
+    RESPOND = '''
+        mutation($id: ID!, $accept: Boolean!, $message: String) {
+            respondToPropertyInterest(interestRequestId: $id, accept: $accept, message: $message) {
+                interestRequest { status applicantName }
+            }
+        }'''
+
+    def test_application_notifies_the_landlord_with_applicant_name(self):
+        request_id = self.apply()
+        notification = Notification.objects.get(recipient=self.landlord_user)
+        self.assertEqual(notification.interest_request_id, int(request_id))
+        result = self.execute('{ propertyInterestRequests { applicantName status } }', self.landlord_user)
+        self.assertEqual(result.data['propertyInterestRequests'],
+                         [{'applicantName': 'Nadia Diallo', 'status': 'PENDING'}])
+
+    def test_landlord_accepts_and_the_applicant_is_notified(self):
+        request_id = self.apply()
+        result = self.execute(self.RESPOND, self.landlord_user, id=request_id, accept=True,
+                              message='Passez me voir samedi.')
+        self.assertIsNone(result.errors)
+        self.assertEqual(result.data['respondToPropertyInterest']['interestRequest']['status'], 'ACCEPTED')
+        notification = Notification.objects.get(recipient=self.applicant)
+        self.assertEqual(notification.title, 'Demande acceptée')
+        self.assertEqual(notification.notification_type, 'property_interest.accepted')
+        self.assertEqual(PropertyInterestMessage.objects.get().message, 'Passez me voir samedi.')
+
+    def test_landlord_refuses(self):
+        request_id = self.apply()
+        result = self.execute(self.RESPOND, self.landlord_user, id=request_id, accept=False)
+        self.assertEqual(result.data['respondToPropertyInterest']['interestRequest']['status'], 'REJECTED')
+        self.assertEqual(Notification.objects.get(recipient=self.applicant).title, 'Demande refusée')
+        self.assertFalse(PropertyInterestMessage.objects.exists())
+
+    def test_only_the_landlord_can_answer(self):
+        request_id = self.apply()
+        for user in (self.applicant, self.stranger):
+            result = self.execute(self.RESPOND, user, id=request_id, accept=True)
+            self.assertIsNotNone(result.errors)
+        self.assertEqual(PropertyInterestRequest.objects.get().status, PropertyInterestRequest.STATUS_PENDING)
+
+    def test_visit_proposal_and_confirmation_notify_each_side(self):
+        request_id = self.apply()
+        send = '''
+            mutation($id: ID!, $type: String, $at: DateTime) {
+                sendPropertyInterestMessage(interestRequestId: $id, message: "Visite ?", messageType: $type,
+                    proposedVisitAt: $at) { interestMessage { id } }
+            }'''
+        result = self.execute(send, self.landlord_user, id=request_id, type='visit_proposal',
+                              at='2026-11-05T10:00:00+00:00')
+        self.assertIsNone(result.errors)
+        self.assertEqual(Notification.objects.filter(recipient=self.applicant).get().title, 'Proposition de visite')
+        result = self.execute(send, self.applicant, id=request_id, type='visit_confirmation')
+        self.assertIsNone(result.errors)
+        self.assertTrue(Notification.objects.filter(recipient=self.landlord_user, title='Visite confirmée').exists())

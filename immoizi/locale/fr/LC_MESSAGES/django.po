@@ -59,3 +59,6 @@ msgstr "Seuls les bailleurs et les membres d'une agence peuvent ajouter des anno
 
 msgid "You can only edit your own listings."
 msgstr "Vous ne pouvez modifier que vos propres annonces."
+
+msgid "Only the landlord can answer this request."
+msgstr "Seul le bailleur peut repondre a cette demande."
