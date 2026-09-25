@@ -1,0 +1,46 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Dashboard → New → Blueprint → select this repository.
+databases:
+  - name: immoizi-db
+    plan: free
+    region: frankfurt
+    databaseName: immoizi
+    user: immoizi
+
+services:
+  - type: web
+    name: immoizi-backend
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: ./build.sh
+    startCommand: cd immoizi && gunicorn immoizi.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL
+        fromDatabase:
+          name: immoizi-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: LANGUAGE_CODE
+        value: fr
+      - key: SECURE_SSL_REDIRECT
+        value: "True"
+      - key: SESSION_COOKIE_SECURE
+        value: "True"
+      - key: CSRF_COOKIE_SECURE
+        value: "True"
+      # Cloudinary keeps uploaded photos/videos across deploys (Render's disk
+      # is wiped on each deploy). Paste cloudinary://<key>:<secret>@<cloud>.
+      - key: CLOUDINARY_URL
+        sync: false
+      # Test deployment: seed demo accounts with a password you choose.
+      - key: SEED_DEMO_DATA
+        value: "True"
+      - key: DEMO_PASSWORD
+        sync: false

@@ -47,6 +47,13 @@ CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
 ])
 
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
+CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
+
+# Render sets RENDER_EXTERNAL_HOSTNAME (e.g. immoizi-backend.onrender.com).
+RENDER_EXTERNAL_HOSTNAME = env('RENDER_EXTERNAL_HOSTNAME', default='')
+if RENDER_EXTERNAL_HOSTNAME:
+    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
+    CSRF_TRUSTED_ORIGINS.append(f'https://{RENDER_EXTERNAL_HOSTNAME}')
 
 # Cloudinary is used as an optional cloud media backend for property images/videos.
 # Set CLOUDINARY_URL (cloudinary://<api_key>:<api_secret>@<cloud_name>) to enable it;
@@ -79,6 +86,7 @@ if USE_CLOUDINARY:
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.locale.LocaleMiddleware',
@@ -166,6 +174,9 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/3.2/howto/static-files/
 
 STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+# WhiteNoise serves the admin's static files from gunicorn (no separate CDN).
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/3.2/ref/settings/#default-auto-field
@@ -179,7 +190,12 @@ if USE_CLOUDINARY:
     # CLOUDINARY_URL is parsed automatically by the cloudinary SDK from the env var.
     DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
 
+# Render (and most PaaS) terminate TLS at a proxy that sets X-Forwarded-Proto;
+# without this, SECURE_SSL_REDIRECT would loop forever.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SECURE_SSL_REDIRECT = env('SECURE_SSL_REDIRECT')
+# Health checks come over plain HTTP from inside Render's network.
+SECURE_REDIRECT_EXEMPT = [r'^healthz$']
 SESSION_COOKIE_SECURE = env('SESSION_COOKIE_SECURE')
 CSRF_COOKIE_SECURE = env('CSRF_COOKIE_SECURE')
 SECURE_HSTS_SECONDS = env('SECURE_HSTS_SECONDS')

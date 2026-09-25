@@ -12,3 +12,4 @@ local_settings.py
 immoizi/immoizi/__pycache__
 immoizi/products/__pycache__
 immoizi/products/migrations/__pycache__
+immoizi/staticfiles/
