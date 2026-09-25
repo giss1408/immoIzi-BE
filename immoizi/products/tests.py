@@ -642,3 +642,20 @@ class InternationalizationTest(TestCase):
     def test_french_language_can_be_activated(self):
         with translation.override('fr'):
             self.assertEqual(translation.get_language(), 'fr')
+
+
+class ThumbnailTest(TestCase):
+    def test_thumbnail_is_rewound_for_remote_storage(self):
+        from utils.imagesManager.imagesManager_upload import make_thumbnail
+
+        buffer = BytesIO()
+        Image.new('RGB', (800, 600), 'orange').save(buffer, 'JPEG')
+        buffer.seek(0)
+        source = SimpleUploadedFile('photo.jpg', buffer.read(), content_type='image/jpeg')
+
+        thumbnail = make_thumbnail(source, size=(300, 200))
+
+        # Cloudinary reads from the current position, not from the start.
+        self.assertEqual(thumbnail.file.tell(), 0)
+        self.assertGreater(len(thumbnail.read()), 0)
+
