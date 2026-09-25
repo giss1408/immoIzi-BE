@@ -38,3 +38,24 @@ msgstr "L'authentification est obligatoire."
 
 msgid "Tenants can create maintenance requests only for their rented properties."
 msgstr "Les locataires peuvent creer des demandes de maintenance uniquement pour les biens qu'ils louent."
+
+msgid "A listing needs a title."
+msgstr "Une annonce doit avoir un titre."
+
+msgid "City and district cannot be empty."
+msgstr "La ville et le quartier sont obligatoires."
+
+msgid "Rooms, surface and price cannot be negative."
+msgstr "Les pieces, la surface et le prix ne peuvent pas etre negatifs."
+
+msgid "Unknown listing status."
+msgstr "Statut d'annonce inconnu."
+
+msgid "Unknown category."
+msgstr "Categorie inconnue."
+
+msgid "Only landlords and agency members can add listings."
+msgstr "Seuls les bailleurs et les membres d'une agence peuvent ajouter des annonces."
+
+msgid "You can only edit your own listings."
+msgstr "Vous ne pouvez modifier que vos propres annonces."

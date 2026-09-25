@@ -4,6 +4,7 @@ from django.core.exceptions import PermissionDenied
 from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from graphene_django import DjangoObjectType
+from graphql import GraphQLError
 from .middleware import issue_token
 from .models import (
     AuditLog,
@@ -670,28 +671,120 @@ class UpdateDescription(graphene.Mutation):
         return UpdateDescription(description=description)
 
 
-class UpdatePropertyListing(graphene.Mutation):
-    """Lets a landlord edit the marketing content of their own listing (price + description only)."""
+LISTING_STATUS_VALUES = {value for value, _label in Description.LISTING_STATUS_CHOICES}
+
+
+def _clean_listing_fields(fields):
+    """Validates landlord-editable listing fields; returns the cleaned values."""
+    cleaned = {}
+    for key in ('title', 'city', 'district', 'description'):
+        if fields.get(key) is not None:
+            cleaned[key] = fields[key].strip()
+    if 'title' in cleaned and not cleaned['title']:
+        raise GraphQLError(_('A listing needs a title.'))
+    for key in ('city', 'district'):
+        if key in cleaned and not cleaned[key]:
+            raise GraphQLError(_('City and district cannot be empty.'))
+    for key in ('rooms', 'surface_m2', 'price'):
+        value = fields.get(key)
+        if value is not None:
+            if value < 0:
+                raise GraphQLError(_('Rooms, surface and price cannot be negative.'))
+            cleaned[key] = value
+    status = fields.get('listing_status')
+    if status is not None:
+        if status not in LISTING_STATUS_VALUES:
+            raise GraphQLError(_('Unknown listing status.'))
+        cleaned['listing_status'] = status
+        # Legacy "occupied" flag, kept in sync for older screens.
+        cleaned['status'] = status in (Description.LISTING_RENTED, Description.LISTING_RESERVED)
+    category_id = fields.get('category_id')
+    if category_id is not None:
+        try:
+            cleaned['category'] = Category.objects.get(pk=category_id)
+        except (Category.DoesNotExist, ValueError):
+            raise GraphQLError(_('Unknown category.'))
+    return cleaned
+
+
+class CreatePropertyListing(graphene.Mutation):
+    """Lets a landlord (or agency member) add a new property to their portfolio."""
 
     class Arguments:
-        property_id = graphene.ID(required=True)
-        price = graphene.Int()
+        title = graphene.String(required=True)
+        category_id = graphene.ID(required=True)
+        city = graphene.String(required=True)
+        district = graphene.String(required=True)
+        rooms = graphene.Int(required=True)
+        price = graphene.Int(required=True)
+        surface_m2 = graphene.Int()
         description = graphene.String()
+        listing_status = graphene.String()
 
     property = graphene.Field(DescriptionType)
 
     @classmethod
-    def mutate(cls, root, info, property_id, price=None, description=None):
+    def mutate(cls, root, info, **fields):
+        user = require_authenticated_user(info)
+        landlord_profile = getattr(user, 'landlord_profile', None)
+        membership = OrganizationMembership.objects.filter(user=user, is_active=True).select_related('organization').first()
+        if landlord_profile is None and membership is None and not user.is_staff:
+            raise PermissionDenied(_('Only landlords and agency members can add listings.'))
+
+        cleaned = _clean_listing_fields({
+            'listing_status': Description.LISTING_AVAILABLE,
+            'surface_m2': 0,
+            'description': '',
+            **fields,
+        })
+        organization = (landlord_profile.organization if landlord_profile and landlord_profile.organization
+                        else membership.organization if membership else None)
+        listing = Description.objects.create(
+            organization=organization,
+            created_by=user,
+            landlord=landlord_profile,
+            tenant=(landlord_profile.display_name if landlord_profile else user.get_username())[:100],
+            product_tag=cleaned['category'].title[:10],
+            imageurl='',
+            **cleaned,
+        )
+        AuditLog.objects.create(
+            organization=organization,
+            actor=user,
+            action='property.created',
+            target_type='Description',
+            target_id=listing.id,
+        )
+        return CreatePropertyListing(property=listing)
+
+
+class UpdatePropertyListing(graphene.Mutation):
+    """Lets a landlord edit their own listing's details (all arguments optional)."""
+
+    class Arguments:
+        property_id = graphene.ID(required=True)
+        title = graphene.String()
+        category_id = graphene.ID()
+        city = graphene.String()
+        district = graphene.String()
+        rooms = graphene.Int()
+        surface_m2 = graphene.Int()
+        price = graphene.Int()
+        description = graphene.String()
+        listing_status = graphene.String()
+
+    property = graphene.Field(DescriptionType)
+
+    @classmethod
+    def mutate(cls, root, info, property_id, **fields):
         user = require_authenticated_user(info)
         try:
             listing = landlord_properties_for_user(user).get(pk=property_id)
-        except Description.DoesNotExist:
+        except (Description.DoesNotExist, ValueError):
             raise PermissionDenied(_('You can only edit your own listings.'))
 
-        if price is not None:
-            listing.price = price
-        if description is not None:
-            listing.description = description
+        for field, value in _clean_listing_fields(fields).items():
+            setattr(listing, field, value)
         listing.save()
 
         AuditLog.objects.create(
@@ -934,6 +1027,7 @@ class Mutation(graphene.ObjectType):
     create_category = CreateCategory.Field()
     create_description = CreateDescription.Field()
     update_description = UpdateDescription.Field()
+    create_property_listing = CreatePropertyListing.Field()
     update_property_listing = UpdatePropertyListing.Field()
     create_maintenance_request = CreateMaintenanceRequest.Field()
     update_maintenance_request = UpdateMaintenanceRequest.Field()

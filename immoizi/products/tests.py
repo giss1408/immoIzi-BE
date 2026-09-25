@@ -659,3 +659,112 @@ class ThumbnailTest(TestCase):
         self.assertEqual(thumbnail.file.tell(), 0)
         self.assertGreater(len(thumbnail.read()), 0)
 
+
+
+class PropertyListingMutationTest(TestCase):
+    CREATE = '''
+        mutation Create($categoryId: ID!, $price: Int!, $status: String) {
+            createPropertyListing(title: "  Duplex Riviera  ", categoryId: $categoryId,
+                city: "Abidjan", district: "Riviera", rooms: 4, price: $price,
+                surfaceM2: 150, description: "Duplex lumineux", listingStatus: $status) {
+                property { id title city district rooms surfaceM2 price listingStatus category { title } }
+            }
+        }
+    '''
+
+    def setUp(self):
+        User = get_user_model()
+        self.landlord_user = User.objects.create_user(username='listing-landlord', password='secret')
+        self.landlord = LandlordProfile.objects.create(user=self.landlord_user, display_name='Aya Kouassi')
+        self.seeker = User.objects.create_user(username='listing-seeker', password='secret')
+        self.other_landlord_user = User.objects.create_user(username='other-landlord', password='secret')
+        LandlordProfile.objects.create(user=self.other_landlord_user, display_name='Other')
+        self.residence = Category.objects.create(title='Residence')
+        self.business = Category.objects.create(title='Business')
+
+    def execute(self, query, user, **variables):
+        with translation.override('en'):
+            return schema.execute(query, variable_values=variables, context_value=SimpleNamespace(user=user))
+
+    def create(self, user=None, **variables):
+        variables.setdefault('categoryId', str(self.residence.id))
+        variables.setdefault('price', 450000)
+        return self.execute(self.CREATE, user or self.landlord_user, **variables)
+
+    def test_landlord_creates_a_listing_visible_in_portfolio_and_public_search(self):
+        result = self.create()
+        self.assertIsNone(result.errors)
+        created = result.data['createPropertyListing']['property']
+        self.assertEqual(created['title'], 'Duplex Riviera')
+        self.assertEqual(created['surfaceM2'], 150)
+        self.assertEqual(created['listingStatus'], 'AVAILABLE')
+        self.assertEqual(created['category']['title'], 'Residence')
+
+        listing = Description.objects.get(pk=created['id'])
+        self.assertEqual(listing.landlord, self.landlord)
+        self.assertEqual(listing.created_by, self.landlord_user)
+        self.assertFalse(listing.status)
+
+        portfolio = self.execute('{ myLandlordProperties { id } }', self.landlord_user)
+        self.assertEqual([p['id'] for p in portfolio.data['myLandlordProperties']], [created['id']])
+        public = self.execute('{ publicDescriptions(search: "Riviera") { id } }', AnonymousUser())
+        self.assertEqual(len(public.data['publicDescriptions']), 1)
+
+    def test_draft_listing_is_not_public(self):
+        result = self.create(status='draft')
+        self.assertIsNone(result.errors)
+        public = self.execute('{ publicDescriptions { id } }', AnonymousUser())
+        self.assertEqual(public.data['publicDescriptions'], [])
+
+    def test_only_landlords_can_create_listings(self):
+        result = self.create(user=self.seeker)
+        self.assertIsNotNone(result.errors)
+        self.assertFalse(Description.objects.exists())
+
+    def test_invalid_values_are_rejected(self):
+        self.assertIn('negative', str(self.create(price=-5).errors[0]))
+        self.assertIn('status', str(self.create(status='flying').errors[0]))
+        self.assertIn('category', str(self.create(categoryId='999999').errors[0]))
+        self.assertFalse(Description.objects.exists())
+
+    def test_owner_updates_all_details(self):
+        listing_id = self.create().data['createPropertyListing']['property']['id']
+        result = self.execute('''
+            mutation Update($id: ID!, $categoryId: ID) {
+                updatePropertyListing(propertyId: $id, title: "Bureaux Plateau", categoryId: $categoryId,
+                    city: "Abidjan", district: "Plateau", rooms: 6, surfaceM2: 210, price: 980000,
+                    description: "Open space", listingStatus: "rented") {
+                    property { title district rooms surfaceM2 price description listingStatus category { title } }
+                }
+            }
+        ''', self.landlord_user, id=listing_id, categoryId=str(self.business.id))
+        self.assertIsNone(result.errors)
+        updated = result.data['updatePropertyListing']['property']
+        self.assertEqual(updated['title'], 'Bureaux Plateau')
+        self.assertEqual(updated['rooms'], 6)
+        self.assertEqual(updated['listingStatus'], 'RENTED')
+        self.assertEqual(updated['category']['title'], 'Business')
+        self.assertTrue(Description.objects.get(pk=listing_id).status)
+
+    def test_partial_update_keeps_other_fields(self):
+        listing_id = self.create().data['createPropertyListing']['property']['id']
+        result = self.execute(
+            'mutation($id: ID!) { updatePropertyListing(propertyId: $id, price: 500000) { property { price title } } }',
+            self.landlord_user, id=listing_id)
+        self.assertIsNone(result.errors)
+        self.assertEqual(result.data['updatePropertyListing']['property'], {'price': 500000, 'title': 'Duplex Riviera'})
+
+    def test_other_landlords_cannot_update(self):
+        listing_id = self.create().data['createPropertyListing']['property']['id']
+        result = self.execute(
+            'mutation($id: ID!) { updatePropertyListing(propertyId: $id, price: 1) { property { price } } }',
+            self.other_landlord_user, id=listing_id)
+        self.assertIsNotNone(result.errors)
+        self.assertEqual(Description.objects.get(pk=listing_id).price, 450000)
+
+    def test_errors_are_translated_to_french(self):
+        with translation.override('fr'):
+            result = schema.execute(self.CREATE, variable_values={'categoryId': str(self.residence.id), 'price': -1},
+                                    context_value=SimpleNamespace(user=self.landlord_user))
+        self.assertIn('negatifs', str(result.errors[0]))
+
