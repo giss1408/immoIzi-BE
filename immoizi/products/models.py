@@ -231,22 +231,22 @@ class Description(models.Model):  # book
     bailleur = models.ForeignKey(Tenant, blank=True, null=True, on_delete=models.CASCADE)
 
     # New fields for images
-    main_image = models.ImageField(storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
-    thumbnail = models.ImageField(upload_to='descriptions/thumbnails/', blank=True, null=True)
-    image_1 = models.ImageField(storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
-    image_2 = models.ImageField(storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
-    image_3 = models.ImageField(storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
-    image_4 = models.ImageField(storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
-    image_5 = models.ImageField(storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
-    image_6 = models.ImageField(storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
-    image_7 = models.ImageField(storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
-    image_8 = models.ImageField(storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
-    image_9 = models.ImageField(storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
-    description_video = models.FileField(storage=property_video_storage, upload_to=property_video_upload_path, validators=property_video_validators, blank=True, null=True)
-    description_video_2 = models.FileField(storage=property_video_storage, upload_to=property_video_upload_path, validators=property_video_validators, blank=True, null=True)
-    description_video_3 = models.FileField(storage=property_video_storage, upload_to=property_video_upload_path, validators=property_video_validators, blank=True, null=True)
-    description_video_4 = models.FileField(storage=property_video_storage, upload_to=property_video_upload_path, validators=property_video_validators, blank=True, null=True)
-    description_video_5 = models.FileField(storage=property_video_storage, upload_to=property_video_upload_path, validators=property_video_validators, blank=True, null=True)
+    main_image = models.ImageField(max_length=255, storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
+    thumbnail = models.ImageField(max_length=255, upload_to='descriptions/thumbnails/', blank=True, null=True)
+    image_1 = models.ImageField(max_length=255, storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
+    image_2 = models.ImageField(max_length=255, storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
+    image_3 = models.ImageField(max_length=255, storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
+    image_4 = models.ImageField(max_length=255, storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
+    image_5 = models.ImageField(max_length=255, storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
+    image_6 = models.ImageField(max_length=255, storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
+    image_7 = models.ImageField(max_length=255, storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
+    image_8 = models.ImageField(max_length=255, storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
+    image_9 = models.ImageField(max_length=255, storage=property_image_storage, upload_to=property_image_upload_path, validators=property_image_validators, blank=True, null=True)
+    description_video = models.FileField(max_length=255, storage=property_video_storage, upload_to=property_video_upload_path, validators=property_video_validators, blank=True, null=True)
+    description_video_2 = models.FileField(max_length=255, storage=property_video_storage, upload_to=property_video_upload_path, validators=property_video_validators, blank=True, null=True)
+    description_video_3 = models.FileField(max_length=255, storage=property_video_storage, upload_to=property_video_upload_path, validators=property_video_validators, blank=True, null=True)
+    description_video_4 = models.FileField(max_length=255, storage=property_video_storage, upload_to=property_video_upload_path, validators=property_video_validators, blank=True, null=True)
+    description_video_5 = models.FileField(max_length=255, storage=property_video_storage, upload_to=property_video_upload_path, validators=property_video_validators, blank=True, null=True)
     is_archived = models.BooleanField(default=False)
     archived_at = models.DateTimeField(blank=True, null=True)
     deleted_at = models.DateTimeField(blank=True, null=True)
@@ -277,7 +277,7 @@ class PropertyMedia(models.Model):
     property = models.ForeignKey(Description, on_delete=models.CASCADE, related_name='media')
     organization = models.ForeignKey(Organization, blank=True, null=True, on_delete=models.CASCADE, related_name='property_media')
     media_type = models.CharField(max_length=20, choices=MEDIA_TYPE_CHOICES)
-    file = models.FileField(upload_to=property_media_upload_path, blank=True, null=True)
+    file = models.FileField(max_length=255, upload_to=property_media_upload_path, blank=True, null=True)
     external_url = models.URLField(blank=True, null=True)
     caption = models.CharField(max_length=180, blank=True)
     position = models.PositiveIntegerField(default=0)
@@ -331,7 +331,7 @@ class PropertyDocument(models.Model):
     title = models.CharField(max_length=160)
     document_type = models.CharField(max_length=30, choices=DOCUMENT_TYPE_CHOICES, default=DOCUMENT_OTHER)
     visibility = models.CharField(max_length=20, choices=VISIBILITY_CHOICES, default=VISIBILITY_INTERNAL)
-    file = models.FileField(upload_to=property_document_upload_path)
+    file = models.FileField(max_length=255, upload_to=property_document_upload_path)
     uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, blank=True, null=True, on_delete=models.SET_NULL, related_name='uploaded_property_documents')
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -538,7 +538,7 @@ class AuditLog(models.Model):
 # models.py Test upload images
 class Hotel(models.Model):
     name = models.CharField(max_length=50)
-    hotel_Main_Img = models.ImageField(upload_to='images/', validators=property_image_validators)
+    hotel_Main_Img = models.ImageField(max_length=255, upload_to='images/', validators=property_image_validators)
     #thumbnail = models.ImageField(upload_to='images/')
  
     '''
@@ -553,8 +553,8 @@ class Hotel(models.Model):
 from some_file import make_thumbnail
 
 class MyModel(models.Model):
-    image = models.ImageField()
-    thumbnail = models.ImageField()
+    image = models.ImageField(max_length=255)
+    thumbnail = models.ImageField(max_length=255)
 
     def save(self, *args, **kwargs):
         self.thumbnail = make_thumbnail(self.image, size=(100, 100))
