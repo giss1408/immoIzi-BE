@@ -2,11 +2,13 @@ from django.db import models
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
+import builtins
 import datetime
 import os
 import uuid
 from decimal import Decimal
 from PIL import Image
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from utils.imagesManager.imagesManager_upload import make_thumbnail
 from .storage import property_image_storage, property_video_storage
@@ -474,6 +476,30 @@ class PropertyInterestRequest(models.Model):
 
     def __str__(self):
         return f'{self.property} - {self.applicant}'
+
+    # An unanswered request stops blocking a new one after this delay.
+    EXPIRY_DAYS = 6
+    OPEN_STATUSES = (STATUS_PENDING, STATUS_REVIEWING)
+
+    # builtins.property: the `property` field above shadows the decorator.
+    @builtins.property
+    def expires_at(self):
+        return self.created_at + datetime.timedelta(days=self.EXPIRY_DAYS)
+
+    @builtins.property
+    def is_expired(self):
+        return self.status in self.OPEN_STATUSES and timezone.now() >= self.expires_at
+
+    @classmethod
+    def open_request(cls, applicant, property_obj):
+        """The applicant's unanswered, unexpired request for this property."""
+        cutoff = timezone.now() - datetime.timedelta(days=cls.EXPIRY_DAYS)
+        return cls.objects.filter(
+            applicant=applicant,
+            property=property_obj,
+            status__in=cls.OPEN_STATUSES,
+            created_at__gt=cutoff,
+        ).order_by('-created_at').first()
 
 
 class Notification(models.Model):

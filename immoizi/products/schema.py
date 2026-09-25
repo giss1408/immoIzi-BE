@@ -2,6 +2,7 @@ import graphene
 from django.contrib.auth import authenticate
 from django.core.exceptions import PermissionDenied
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from graphene_django import DjangoObjectType
 from graphql import GraphQLError
@@ -347,6 +348,8 @@ class MaintenanceRequestType(DjangoObjectType):
 
 class PropertyInterestRequestType(DjangoObjectType):
     applicant_name = graphene.String()
+    expires_at = graphene.DateTime()
+    is_expired = graphene.Boolean()
 
     class Meta:
         model = PropertyInterestRequest
@@ -354,6 +357,12 @@ class PropertyInterestRequestType(DjangoObjectType):
 
     def resolve_applicant_name(self, info):
         return self.applicant.get_full_name() or self.applicant.get_username()
+
+    def resolve_expires_at(self, info):
+        return self.expires_at
+
+    def resolve_is_expired(self, info):
+        return self.is_expired
 
 
 class NotificationType(DjangoObjectType):
@@ -497,6 +506,15 @@ class CreatePropertyInterestRequest(graphene.Mutation):
             property_obj = public_descriptions_queryset().get(pk=property_id)
         except Description.DoesNotExist:
             raise PermissionDenied(_('This listing is not available for applications.'))
+
+        # One open request per applicant and listing: wait for the landlord's
+        # answer, or for the previous request to expire.
+        existing = PropertyInterestRequest.open_request(user, property_obj)
+        if existing is not None:
+            raise GraphQLError(_(
+                'You already have a pending request for this listing. You can send a new one '
+                'once the landlord answers it, or from %(date)s.'
+            ) % {'date': timezone.localtime(existing.expires_at).strftime('%d/%m/%Y')})
 
         interest_request = PropertyInterestRequest.objects.create(
             property=property_obj,

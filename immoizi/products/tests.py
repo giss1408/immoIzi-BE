@@ -11,7 +11,7 @@ from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.conf import settings
 from django.test import TestCase, override_settings
-from django.utils import translation
+from django.utils import timezone, translation
 from PIL import Image
 
 from .models import (
@@ -851,3 +851,67 @@ class InterestResponseTest(TestCase):
         result = self.execute(send, self.applicant, id=request_id, type='visit_confirmation')
         self.assertIsNone(result.errors)
         self.assertTrue(Notification.objects.filter(recipient=self.landlord_user, title='Visite confirmée').exists())
+
+
+class InterestRequestLimitTest(InterestResponseTest):
+    """One open request per applicant and listing until answered or expired."""
+
+    def apply_errors(self, property_obj=None):
+        result = self.execute('''
+            mutation($id: ID!) {
+                createPropertyInterestRequest(propertyId: $id, profession: "Fonctionnaire",
+                    salaryRange: "300 000 - 500 000 FCFA", occupantsCount: 2, leaseStartDate: "2026-11-01")
+                    { interestRequest { id } }
+            }''', self.applicant, id=str((property_obj or self.property).id))
+        return result.errors
+
+    def test_second_request_is_blocked_while_pending_or_reviewing(self):
+        self.apply()
+        errors = self.apply_errors()
+        self.assertIn('already have a pending request', str(errors[0]))
+        PropertyInterestRequest.objects.update(status=PropertyInterestRequest.STATUS_REVIEWING)
+        self.assertIsNotNone(self.apply_errors())
+        self.assertEqual(PropertyInterestRequest.objects.count(), 1)
+        self.assertEqual(Notification.objects.filter(recipient=self.landlord_user).count(), 1)
+
+    def test_new_request_allowed_once_answered(self):
+        for accept in (True, False):
+            request_id = self.apply()
+            self.execute(self.RESPOND, self.landlord_user, id=request_id, accept=accept)
+            self.assertIsNone(self.apply_errors())
+            PropertyInterestRequest.objects.all().delete()
+
+    def test_new_request_allowed_after_six_days(self):
+        self.apply()
+        PropertyInterestRequest.objects.update(
+            created_at=timezone.now() - datetime.timedelta(days=6, minutes=1))
+        result = self.execute('{ myPropertyInterestRequests { isExpired expiresAt } }', self.applicant)
+        self.assertTrue(result.data['myPropertyInterestRequests'][0]['isExpired'])
+        self.assertIsNone(self.apply_errors())
+        self.assertEqual(PropertyInterestRequest.objects.count(), 2)
+
+    def test_other_listings_stay_open(self):
+        self.apply()
+        other = Description.objects.create(
+            landlord=self.property.landlord, created_by=self.landlord_user, title='Studio Plateau', rooms=1,
+            price=200000, description='Studio', status=False, listing_status=Description.LISTING_AVAILABLE,
+            category=self.property.category, imageurl='', product_tag='STU')
+        self.assertIsNone(self.apply_errors(other))
+
+    def test_fresh_request_is_not_expired(self):
+        self.apply()
+        result = self.execute('{ myPropertyInterestRequests { isExpired } }', self.applicant)
+        self.assertFalse(result.data['myPropertyInterestRequests'][0]['isExpired'])
+
+    def test_blocking_message_is_french_with_the_date(self):
+        self.apply()
+        expected = timezone.localtime(PropertyInterestRequest.objects.get().expires_at).strftime('%d/%m/%Y')
+        with translation.override('fr'):
+            result = schema.execute('''
+                mutation($id: ID!) {
+                    createPropertyInterestRequest(propertyId: $id, profession: "X", salaryRange: "Y",
+                        occupantsCount: 1, leaseStartDate: "2026-11-01") { interestRequest { id } }
+                }''', variable_values={'id': str(self.property.id)},
+                context_value=SimpleNamespace(user=self.applicant))
+        self.assertIn('demande en cours', str(result.errors[0]))
+        self.assertIn(expected, str(result.errors[0]))
