@@ -114,3 +114,6 @@ class PortfolioStock(models.Model):
         return f"{self.portfolio.name} - {self.stock.stock_code}"
 
 
+
+
+
