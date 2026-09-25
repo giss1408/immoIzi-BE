@@ -198,6 +198,12 @@ class Description(models.Model):  # book
     LISTING_MAINTENANCE = 'maintenance'
     LISTING_ARCHIVED = 'archived'
     LISTING_SOLD = 'sold'
+    RENTAL_LONG_TERM = 'long_term'
+    RENTAL_SHORT_TERM = 'short_term'
+    RENTAL_TYPE_CHOICES = [
+        (RENTAL_LONG_TERM, 'Long term (monthly rent)'),
+        (RENTAL_SHORT_TERM, 'Short term (per night / week)'),
+    ]
     LISTING_STATUS_CHOICES = [
         (LISTING_DRAFT, 'Draft'),
         (LISTING_AVAILABLE, 'Available'),
@@ -224,6 +230,10 @@ class Description(models.Model):  # book
     description = models.TextField()  # description detaillee du proprietaire
     status = models.BooleanField()  # oqp / libre
     listing_status = models.CharField(max_length=20, choices=LISTING_STATUS_CHOICES, default=LISTING_DRAFT)
+    # Long term: `price` is the monthly rent. Short term (furnished stays of a
+    # few nights or weeks): `price` is per night, `weekly_price` for 7 nights.
+    rental_type = models.CharField(max_length=20, choices=RENTAL_TYPE_CHOICES, default=RENTAL_LONG_TERM, db_index=True)
+    weekly_price = models.IntegerField(blank=True, null=True)
     date_created = models.DateField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     date_toEnter = models.DateField(default=datetime.date.today)  # Libre a partir de 

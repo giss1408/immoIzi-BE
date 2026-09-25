@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from io import BytesIO
+from io import BytesIO, StringIO
 from decimal import Decimal
 import tempfile
 import datetime
@@ -915,3 +915,73 @@ class InterestRequestLimitTest(InterestResponseTest):
                 context_value=SimpleNamespace(user=self.applicant))
         self.assertIn('demande en cours', str(result.errors[0]))
         self.assertIn(expected, str(result.errors[0]))
+
+
+class RentalTypeTest(PropertyListingMutationTest):
+    SHORT = '''
+        mutation($categoryId: ID!) {
+            createPropertyListing(title: "Studio meuble Zone 4", categoryId: $categoryId, city: "Abidjan",
+                district: "Zone 4", rooms: 1, price: 30000, rentalType: "short_term", weeklyPrice: 180000) {
+                property { id rentalType price weeklyPrice }
+            }
+        }'''
+
+    def create_short(self):
+        result = self.execute(self.SHORT, self.landlord_user, categoryId=str(self.residence.id))
+        self.assertIsNone(result.errors)
+        return result.data['createPropertyListing']['property']
+
+    def test_short_term_listing_keeps_nightly_and_weekly_prices(self):
+        created = self.create_short()
+        self.assertEqual(created['rentalType'], 'SHORT_TERM')
+        self.assertEqual((created['price'], created['weeklyPrice']), (30000, 180000))
+
+    def test_listings_default_to_long_term(self):
+        created = self.create().data['createPropertyListing']['property']
+        self.assertEqual(Description.objects.get(pk=created['id']).rental_type, Description.RENTAL_LONG_TERM)
+
+    def test_public_and_portfolio_filter_by_rental_type(self):
+        self.create()
+        self.create_short()
+        for query, user in (('publicDescriptions', AnonymousUser()), ('myLandlordProperties', self.landlord_user)):
+            short = self.execute('{ %s(rentalType: "short_term") { title } }' % query, user)
+            self.assertEqual([p['title'] for p in short.data[query]], ['Studio meuble Zone 4'])
+            monthly = self.execute('{ %s(rentalType: "long_term") { title } }' % query, user)
+            self.assertEqual([p['title'] for p in monthly.data[query]], ['Duplex Riviera'])
+            both = self.execute('{ %s { title } }' % query, user)
+            self.assertEqual(len(both.data[query]), 2)
+
+    def test_switching_to_long_term_drops_the_weekly_price(self):
+        listing_id = self.create_short()['id']
+        result = self.execute('''
+            mutation($id: ID!) {
+                updatePropertyListing(propertyId: $id, rentalType: "long_term", price: 250000) {
+                    property { rentalType price weeklyPrice }
+                }
+            }''', self.landlord_user, id=listing_id)
+        self.assertEqual(result.data['updatePropertyListing']['property'],
+                         {'rentalType': 'LONG_TERM', 'price': 250000, 'weeklyPrice': None})
+
+    def test_unknown_rental_type_is_rejected(self):
+        self.assertIn('rental type', str(self.execute(
+            '{ publicDescriptions(rentalType: "hourly") { id } }', AnonymousUser()).errors[0]))
+        result = self.execute('''
+            mutation($categoryId: ID!) {
+                createPropertyListing(title: "X", categoryId: $categoryId, city: "A", district: "B",
+                    rooms: 1, price: 1, rentalType: "hourly") { property { id } }
+            }''', self.landlord_user, categoryId=str(self.residence.id))
+        self.assertIn('rental type', str(result.errors[0]))
+
+
+class SeedDemoDataTest(TestCase):
+    def test_seed_adds_a_short_term_listing_and_keeps_landlord_edits(self):
+        from django.core.management import call_command
+
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            call_command('seed_demo_data', password='x', stdout=StringIO())
+            short = Description.objects.get(rental_type=Description.RENTAL_SHORT_TERM)
+            self.assertEqual((short.price, short.weekly_price), (35000, 210000))
+
+            Description.objects.filter(pk=short.pk).update(price=40000)
+            call_command('seed_demo_data', password='x', stdout=StringIO())
+            self.assertEqual(Description.objects.get(pk=short.pk).price, 40000)

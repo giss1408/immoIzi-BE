@@ -117,6 +117,19 @@ PROPERTIES = [
         'listing_status': Description.LISTING_AVAILABLE,
         'description': 'Studio compact et meuble, ideal pour etudiant ou jeune actif.',
     },
+    {
+        'title': 'Appartement meuble Riviera Golf',
+        'category': 'Residence',
+        'city': 'Abidjan',
+        'district': 'Riviera Golf',
+        'rooms': 2,
+        'surface_m2': 65,
+        'price': 35000,  # per night
+        'weekly_price': 210000,
+        'rental_type': Description.RENTAL_SHORT_TERM,
+        'listing_status': Description.LISTING_AVAILABLE,
+        'description': 'Appartement meuble et climatise, wifi, menage inclus. Location a la nuit ou a la semaine.',
+    },
 ]
 
 
@@ -237,7 +250,9 @@ class Command(BaseCommand):
         properties = []
         for index, data in enumerate(PROPERTIES):
             current_tenant = tenant_profile if index == 1 else None
-            description, _created = Description.objects.update_or_create(
+            # Create only: landlords may edit demo listings, and redeploying
+            # must not revert their changes.
+            description, _created = Description.objects.get_or_create(
                 title=data['title'],
                 defaults={
                     'organization': organization,
@@ -252,6 +267,8 @@ class Command(BaseCommand):
                     'rooms': data['rooms'],
                     'surface_m2': data['surface_m2'],
                     'price': data['price'],
+                    'rental_type': data.get('rental_type', Description.RENTAL_LONG_TERM),
+                    'weekly_price': data.get('weekly_price'),
                     'description': data['description'],
                     'status': data['listing_status'] != Description.LISTING_AVAILABLE,
                     'listing_status': data['listing_status'],

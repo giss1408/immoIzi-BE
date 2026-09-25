@@ -65,6 +65,18 @@ def public_descriptions_queryset():
     )
 
 
+RENTAL_TYPE_VALUES = {value for value, _label in Description.RENTAL_TYPE_CHOICES}
+
+
+def filter_by_rental_type(queryset, rental_type):
+    """Optional rental duration filter; unknown values are rejected."""
+    if not rental_type:
+        return queryset
+    if rental_type not in RENTAL_TYPE_VALUES:
+        raise GraphQLError(_('Unknown rental type.'))
+    return queryset.filter(rental_type=rental_type)
+
+
 def landlord_properties_for_user(user):
     queryset = Description.objects.select_related('category', 'landlord', 'current_tenant', 'bailleur')
     if user.is_staff or user.is_superuser:
@@ -269,6 +281,7 @@ class DescriptionType(DjangoObjectType):
             'image_1', 'image_2', 'image_3', 'image_4', 'image_5', 'image_6', 'image_7', 'image_8', 'image_9',
             'main_image', 'description_video', 'description_video_2', 'description_video_3', 'description_video_4', 'description_video_5',
             'surface_m2', 'listing_status', 'updated_at', 'is_archived', 'archived_at', 'deleted_at', 'is_test_data',
+            'rental_type', 'weekly_price',
         )
 
     def resolve_main_image_url(self, info):
@@ -784,6 +797,16 @@ def _clean_listing_fields(fields):
         cleaned['listing_status'] = status
         # Legacy "occupied" flag, kept in sync for older screens.
         cleaned['status'] = status in (Description.LISTING_RENTED, Description.LISTING_RESERVED)
+    rental_type = fields.get('rental_type')
+    if rental_type is not None:
+        if rental_type not in RENTAL_TYPE_VALUES:
+            raise GraphQLError(_('Unknown rental type.'))
+        cleaned['rental_type'] = rental_type
+    if 'weekly_price' in fields:
+        weekly_price = fields['weekly_price']
+        if weekly_price is not None and weekly_price < 0:
+            raise GraphQLError(_('Rooms, surface and price cannot be negative.'))
+        cleaned['weekly_price'] = weekly_price or None
     category_id = fields.get('category_id')
     if category_id is not None:
         try:
@@ -806,6 +829,8 @@ class CreatePropertyListing(graphene.Mutation):
         surface_m2 = graphene.Int()
         description = graphene.String()
         listing_status = graphene.String()
+        rental_type = graphene.String()
+        weekly_price = graphene.Int()
 
     property = graphene.Field(DescriptionType)
 
@@ -819,10 +844,13 @@ class CreatePropertyListing(graphene.Mutation):
 
         cleaned = _clean_listing_fields({
             'listing_status': Description.LISTING_AVAILABLE,
+            'rental_type': Description.RENTAL_LONG_TERM,
             'surface_m2': 0,
             'description': '',
             **fields,
         })
+        if cleaned['rental_type'] == Description.RENTAL_LONG_TERM:
+            cleaned['weekly_price'] = None
         organization = (landlord_profile.organization if landlord_profile and landlord_profile.organization
                         else membership.organization if membership else None)
         listing = Description.objects.create(
@@ -858,6 +886,8 @@ class UpdatePropertyListing(graphene.Mutation):
         price = graphene.Int()
         description = graphene.String()
         listing_status = graphene.String()
+        rental_type = graphene.String()
+        weekly_price = graphene.Int()
 
     property = graphene.Field(DescriptionType)
 
@@ -871,6 +901,8 @@ class UpdatePropertyListing(graphene.Mutation):
 
         for field, value in _clean_listing_fields(fields).items():
             setattr(listing, field, value)
+        if listing.rental_type == Description.RENTAL_LONG_TERM:
+            listing.weekly_price = None  # Weekly rates only apply to short stays.
         listing.save()
 
         AuditLog.objects.create(
@@ -899,9 +931,9 @@ class Query(graphene.ObjectType):
     user_profile = graphene.Field(UserProfileType)
     landlord_profile = graphene.Field(LandlordProfileType)
     tenant_profile = graphene.Field(TenantProfileType)
-    public_descriptions = graphene.List(DescriptionType, first=graphene.Int(), offset=graphene.Int(), search=graphene.String(), city=graphene.String())
+    public_descriptions = graphene.List(DescriptionType, first=graphene.Int(), offset=graphene.Int(), search=graphene.String(), city=graphene.String(), rental_type=graphene.String())
     descriptions = graphene.List(DescriptionType, first=graphene.Int(), offset=graphene.Int(), search=graphene.String(), listing_status=graphene.String())
-    my_landlord_properties = graphene.List(DescriptionType, first=graphene.Int(), offset=graphene.Int(), search=graphene.String())
+    my_landlord_properties = graphene.List(DescriptionType, first=graphene.Int(), offset=graphene.Int(), search=graphene.String(), rental_type=graphene.String())
     my_tenant_properties = graphene.List(DescriptionType)
     my_tenant_leases = graphene.List(LeaseType)
     my_tenant_payments = graphene.List(RentPaymentType)
@@ -941,8 +973,8 @@ class Query(graphene.ObjectType):
         user = require_authenticated_user(info)
         return getattr(user, 'tenant_profile', None)
 
-    def resolve_public_descriptions(self, info, first=None, offset=None, search=None, city=None, **kwargs):
-        queryset = public_descriptions_queryset()
+    def resolve_public_descriptions(self, info, first=None, offset=None, search=None, city=None, rental_type=None, **kwargs):
+        queryset = filter_by_rental_type(public_descriptions_queryset(), rental_type)
         if search:
             queryset = queryset.filter(
                 Q(title__icontains=search) |
@@ -982,9 +1014,9 @@ class Query(graphene.ObjectType):
             queryset = queryset[:first]
         return queryset
 
-    def resolve_my_landlord_properties(self, info, first=None, offset=None, search=None, **kwargs):
+    def resolve_my_landlord_properties(self, info, first=None, offset=None, search=None, rental_type=None, **kwargs):
         user = require_authenticated_user(info)
-        queryset = landlord_properties_for_user(user)
+        queryset = filter_by_rental_type(landlord_properties_for_user(user), rental_type)
         if search:
             queryset = queryset.filter(
                 Q(title__icontains=search) |

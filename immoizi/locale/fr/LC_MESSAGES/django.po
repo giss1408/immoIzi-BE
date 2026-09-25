@@ -66,3 +66,6 @@ msgstr "Seul le bailleur peut repondre a cette demande."
 #, python-format
 msgid "You already have a pending request for this listing. You can send a new one once the landlord answers it, or from %(date)s."
 msgstr "Vous avez deja une demande en cours pour ce bien. Vous pourrez en envoyer une nouvelle apres la reponse du bailleur, ou a partir du %(date)s."
+
+msgid "Unknown rental type."
+msgstr "Type de location inconnu."
