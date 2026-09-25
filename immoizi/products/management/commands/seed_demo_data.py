@@ -1,6 +1,7 @@
 import datetime
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
@@ -38,8 +39,9 @@ IMAGE_COLORS = [
     (120, 120, 120),
 ]
 
-# Minimal MP4 container bytes (ftyp box only) - enough to pass upload validation for demo/testing.
-DUMMY_VIDEO_BYTES = b'\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom' + b'\x00' * 512
+# A real 2-second H.264 clip (4 KB): cloud storage such as Cloudinary rejects
+# fake container bytes, and the apps' video player needs something playable.
+DEMO_VIDEO_PATH = Path(__file__).resolve().parent / 'fixtures' / 'demo-video.mp4'
 
 
 def _dummy_image_bytes(color_index):
@@ -265,11 +267,18 @@ class Command(BaseCommand):
 
     def _attach_media(self, properties):
         for index, description in enumerate(properties):
+            # Re-running the seed (e.g. on every deploy) must not re-upload.
+            if description.main_image:
+                continue
             description.main_image.save(f'demo-{index}-main.jpg', ContentFile(_dummy_image_bytes(index)), save=False)
             if index == 0:
                 description.image_1.save('demo-0-gallery-1.jpg', ContentFile(_dummy_image_bytes(index + 1)), save=False)
                 description.image_2.save('demo-0-gallery-2.jpg', ContentFile(_dummy_image_bytes(index + 2)), save=False)
-                description.description_video.save('demo-0-video.mp4', ContentFile(DUMMY_VIDEO_BYTES), save=False)
+                try:
+                    description.description_video.save(
+                        'demo-0-video.mp4', ContentFile(DEMO_VIDEO_PATH.read_bytes()), save=False)
+                except Exception as exc:  # A missing demo video must not fail a deploy.
+                    self.stderr.write(self.style.WARNING(f'Demo video skipped: {exc}'))
             elif index == 1:
                 description.image_1.save('demo-1-gallery-1.jpg', ContentFile(_dummy_image_bytes(index + 1)), save=False)
             description.save()
